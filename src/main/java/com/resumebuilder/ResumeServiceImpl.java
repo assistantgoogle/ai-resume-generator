@@ -1,10 +1,13 @@
 package com.resumebuilder;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.core.io.ClassPathResource;
@@ -15,6 +18,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 @Service
 public class ResumeServiceImpl implements ResumeService {
 
+    private static final Logger logger = LoggerFactory.getLogger(ResumeServiceImpl.class);
     private final ChatClient chatClient;
 
     public ResumeServiceImpl(ChatClient.Builder builder) {
@@ -22,65 +26,58 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     @Override
-    public String generateResumeresponse(String userResumeDescription) {
-        try {
-            String promptString = this.loadPromptFromFile("resume_prompt.txt");
-            String promptContent = this.putValuesToTemplate(promptString, Map.of(
-                    "userDescription", userResumeDescription
-            ));
+    public Map<String, Object> generateResumeResponse(String userResumeDescription) throws IOException {
+        logger.info("Generating resume response for user description: {}", userResumeDescription);
 
-            Prompt prompt = new Prompt(promptContent);
-            return chatClient.prompt(prompt).call().content();
-        } catch (IOException e) {
-            e.printStackTrace();
-            return "Error generating resume response.";
-        }
+        String promptString = this.loadPromptFromFile("resume_prompt.txt");
+        String promptContent = this.putValuesToTemplate(promptString, Map.of(
+                "userDescription", userResumeDescription
+        ));
+        Prompt prompt = new Prompt(promptContent);
+        String response = chatClient.prompt(prompt).call().content();
+        Map<String, Object> stringObjectMap = parseMultipleResponses(response);
+
+        logger.info("Generated resume response: {}", stringObjectMap);
+        return stringObjectMap;
     }
 
     private String loadPromptFromFile(String filename) throws IOException {
+        logger.info("Loading prompt from file: {}", filename);
         Path path = new ClassPathResource(filename).getFile().toPath();
-        return Files.readString(path);
+        String content = Files.readString(path);
+        logger.info("Loaded prompt content: {}", content);
+        return content;
     }
 
     private String putValuesToTemplate(String template, Map<String, String> values) {
+        logger.info("Putting values into template: {}", template);
         for (Map.Entry<String, String> entry : values.entrySet()) {
-            template = template.replace("{" + entry.getKey() + "}", entry.getValue());
+            template = template.replace("{{" + entry.getKey() + "}}", entry.getValue());
         }
+        logger.info("Updated template: {}", template);
         return template;
     }
-    
-    
-    public static Map<String, Object> parseMultipleResponses(String response) {
+
+    private static Map<String, Object> parseMultipleResponses(String response) {
         Map<String, Object> jsonResponse = new HashMap<>();
+        ObjectMapper objectMapper = new ObjectMapper();
 
-        // Extract content inside <think> tags
-        int thinkStart = response.indexOf("<think>") + 7;
-        int thinkEnd = response.indexOf("</think>");
-        if (thinkStart != -1 && thinkEnd != -1) {
-            String thinkContent = response.substring(thinkStart, thinkEnd).trim();
-            jsonResponse.put("think", thinkContent);
-        } else {
-            jsonResponse.put("think", null); // Handle missing <think> tags
-        }
+        logger.info("Parsing response: {}", response);
 
-        // Extract content that is in JSON format
-        int jsonStart = response.indexOf("```json") + 7; // Start after ```json
-        int jsonEnd = response.lastIndexOf("```");       // End before ```
-        if (jsonStart != -1 && jsonEnd != -1 && jsonStart < jsonEnd) {
-            String jsonContent = response.substring(jsonStart, jsonEnd).trim();
-            try {
-                // Convert JSON string to Map using Jackson ObjectMapper
-                ObjectMapper objectMapper = new ObjectMapper();
-                Map<String, Object> dataContent = objectMapper.readValue(jsonContent, Map.class);
-                jsonResponse.put("data", dataContent);
-            } catch (Exception e) {
-                jsonResponse.put("data", null); // Handle invalid JSON
-                System.err.println("Invalid JSON format in the response: " + e.getMessage());
+        try {
+            // Extract JSON content between ```json and ```
+            int jsonStart = response.indexOf("```json") + 7;
+            int jsonEnd = response.lastIndexOf("```");
+
+            if (jsonStart > 6 && jsonEnd > jsonStart) {
+                String jsonContent = response.substring(jsonStart, jsonEnd).trim();
+                jsonResponse = objectMapper.readValue(jsonContent, Map.class);
             }
-        } else {
-            jsonResponse.put("data", null); // Handle missing JSON
+        } catch (Exception e) {
+            logger.error("Error parsing JSON response: {}", e.getMessage());
         }
 
+        logger.info("Parsed JSON response: {}", jsonResponse);
         return jsonResponse;
     }
 }
